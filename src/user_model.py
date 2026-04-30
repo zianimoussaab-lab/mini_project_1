@@ -1,9 +1,9 @@
 """User domain model with field-level validation."""
 
 import re
-import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from typing import Optional
 
 DATE_FORMAT = "%Y-%m-%d"
 PHONE_PATTERN = re.compile(r"^\+?[0-9]{8,15}$")
@@ -28,7 +28,7 @@ class User:
     birth_date: str  # stored as 'YYYY-MM-DD'
     birth_place: str
     phone_number: str
-    user_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[int] = None  # assigned by the repository on insert
 
     def validate(self) -> None:
         for name in REQUIRED_FIELDS:
@@ -54,7 +54,7 @@ class User:
     @classmethod
     def from_dict(cls, data: dict) -> "User":
         return cls(
-            user_id=data.get("user_id") or str(uuid.uuid4()),
+            user_id=data.get("user_id"),
             first_name=data["first_name"],
             last_name=data["last_name"],
             birth_date=data["birth_date"],

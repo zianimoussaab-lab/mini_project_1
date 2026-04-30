@@ -36,9 +36,9 @@ def main() -> int:
         birth_place="Oum El Bouaghi",
         phone_number=f"+213{uuid.uuid4().int % 10**9:09d}",
     )
-    print(f"[3/6] Inserting sample user (user_id={sample.user_id})...")
-    repo.create(sample)
-    print("       OK")
+    print("[3/6] Inserting sample user...")
+    new_id = repo.create(sample)
+    print(f"       OK (assigned user_id={new_id})")
 
     print("[4/6] Verifying duplicate phone is rejected...")
     duplicate = User(
