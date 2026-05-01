@@ -92,9 +92,12 @@ ADD_FORM_DEFAULTS = {
 
 
 def init_state() -> None:
+    st.session_state.setdefault("view", "list")
+    st.session_state.setdefault("editing_user_id", None)
     st.session_state.setdefault("search_query", "")
-    st.session_state.setdefault("selected_user_id", None)
     st.session_state.setdefault("delete_target_id", None)
+    st.session_state.setdefault("bulk_delete_target_ids", None)
+    st.session_state.setdefault("users_table_rev", 0)
     st.session_state.setdefault("flash", None)
     for key, default in ADD_FORM_DEFAULTS.items():
         st.session_state.setdefault(key, default)
@@ -105,8 +108,42 @@ def clear_add_form() -> None:
         st.session_state[key] = default
 
 
+def goto_list() -> None:
+    st.session_state["view"] = "list"
+    st.session_state["editing_user_id"] = None
+    st.session_state["delete_target_id"] = None
+
+
+def goto_create() -> None:
+    st.session_state["view"] = "create"
+
+
+def goto_edit(user_id: int) -> None:
+    st.session_state["view"] = "edit"
+    st.session_state["editing_user_id"] = user_id
+    st.session_state["delete_target_id"] = None
+
+
+def flash(kind: str, message: str) -> None:
+    st.session_state["flash"] = (kind, message)
+
+
+def render_flash() -> None:
+    pending = st.session_state.get("flash")
+    if not pending:
+        return
+    kind, message = pending
+    {"success": st.success, "error": st.error, "info": st.info}.get(kind, st.info)(message)
+    st.session_state["flash"] = None
+
+
+# --------------------------------------------------------------------------- #
+# Styles
+# --------------------------------------------------------------------------- #
+
+
 def inject_app_styles() -> None:
-    """Global app CSS: sidebar polish, visible input borders, form ergonomics."""
+    """Global app CSS: sidebar polish, top bar, visible inputs, form ergonomics."""
     st.markdown(
         """
         <style>
@@ -118,6 +155,57 @@ def inject_app_styles() -> None:
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] hr {
             border-color: #E5E7EB;
             margin: 1rem 0;
+        }
+
+        /* ---------- Top bar ---------- */
+        .topbar-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.6rem 1.5rem 0.6rem 1.5rem;
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 12px;
+            margin: 0 0 1.25rem 0;
+            box-shadow: 0 1px 3px rgba(17, 24, 39, 0.05);
+        }
+        .topbar-nav {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-left: 0.5rem;
+        }
+        .topbar-nav .nav-item {
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: #4F46E5;
+            padding: 0.35rem 0.75rem;
+            border-radius: 8px;
+            background: #EEF2FF;
+            border: 1px solid #C7D2FE;
+        }
+        .topbar-user {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+        }
+        .topbar-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4F46E5, #7C3AED);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.95rem;
+            box-shadow: 0 2px 6px rgba(79, 70, 229, 0.3);
+        }
+        .topbar-username {
+            color: #111827;
+            font-weight: 600;
+            font-size: 0.95rem;
         }
 
         /* ---------- Input visibility ---------- */
@@ -140,45 +228,238 @@ def inject_app_styles() -> None:
         }
 
         /* ---------- Form ergonomics ---------- */
-        /* Visually capitalize each word in name fields as the user types. */
         input[aria-label^="First name"],
         input[aria-label^="Last name"] {
             text-transform: capitalize;
         }
-        /* Tighten the gap between columns within forms. */
         div[data-testid="stForm"] div[data-testid="stHorizontalBlock"] {
             gap: 0.35rem;
         }
+
+        /* ---------- Red delete (icon-only) button inside forms ---------- */
+        /* Targets any form button whose label is a Material Symbol (i.e. our
+           bin icon). The save button uses plain text, so it's untouched. */
+        div[data-testid="stForm"] button:has(span[class*="material-"]) {
+            background: #DC2626 !important;
+            border-color: #DC2626 !important;
+            color: #FFFFFF !important;
+            box-shadow: 0 2px 6px rgba(220, 38, 38, 0.25) !important;
+        }
+        div[data-testid="stForm"] button:has(span[class*="material-"]):hover {
+            background: #B91C1C !important;
+            border-color: #B91C1C !important;
+        }
+        div[data-testid="stForm"] button:has(span[class*="material-"]) span[class*="material-"] {
+            color: #FFFFFF !important;
+            font-size: 1.2rem !important;
+        }
+
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def flash(kind: str, message: str) -> None:
-    st.session_state["flash"] = (kind, message)
+# --------------------------------------------------------------------------- #
+# Top bar
+# --------------------------------------------------------------------------- #
 
 
-def render_flash() -> None:
-    pending = st.session_state.get("flash")
-    if not pending:
+def render_top_bar() -> None:
+    """Sticky-style header with a Users menu (left) and admin avatar (right)."""
+    # The static parts of the top bar (avatar + admin label) are pure HTML.
+    # The Users navigation item must be a real Streamlit button so it can
+    # trigger reruns, so we approximate the layout with columns.
+    bar_left, _, bar_right = st.columns([3, 5, 3])
+
+    with bar_left:
+        # The button mimics the styled .nav-item via Streamlit's primary type.
+        if st.button("Users", key="nav_users", type="primary"):
+            goto_list()
+            st.rerun()
+
+    with bar_right:
+        st.markdown(
+            """
+            <div class="topbar-user" style="justify-content: flex-end; padding-top: 0.35rem;">
+                <div class="topbar-avatar">A</div>
+                <span class="topbar-username">admin</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<hr style="margin: 0.25rem 0 1.25rem 0; border: none; border-top: 1px solid #E5E7EB;">',
+        unsafe_allow_html=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# List view
+# --------------------------------------------------------------------------- #
+
+
+def page_users_list(repo: UserRepository) -> None:
+    # Slots are reserved at the top so the action bar and confirmation
+    # banner can be filled in AFTER we know what the user has selected
+    # in the dataframe below.
+    action_slot = st.empty()
+    confirm_slot = st.empty()
+
+    st.markdown("### Users")
+
+    query = st.text_input(
+        "Search",
+        value=st.session_state["search_query"],
+        placeholder="Filter by name, phone, place, birth date, or ID",
+        label_visibility="collapsed",
+    )
+    st.session_state["search_query"] = query
+
+    users = repo.search(query) if query.strip() else repo.get_all()
+
+    # Empty state — only the Create button is meaningful.
+    if not users:
+        with action_slot.container():
+            create_col, _ = st.columns([1, 6])
+            if create_col.button(
+                "+ Create",
+                key="btn_create_empty",
+                type="primary",
+                use_container_width=True,
+            ):
+                goto_create()
+                st.rerun()
+        st.info(
+            "No users match your search."
+            if query
+            else "No users yet. Click **+ Create** to add one."
+        )
         return
-    kind, message = pending
-    {"success": st.success, "error": st.error, "info": st.info}.get(kind, st.info)(message)
-    st.session_state["flash"] = None
+
+    rows = [
+        {
+            "ID": u.user_id,
+            "First Name": u.first_name,
+            "Last Name": u.last_name,
+            "Birth Date": format_date_display(u.birth_date),
+            "Birth Place": u.birth_place,
+            "Phone Number": u.phone_number,
+        }
+        for u in users
+    ]
+
+    # The dataframe key embeds a revision counter so we can force a fresh
+    # selection state after a bulk delete (otherwise stale row indices
+    # could point past the end of the new shorter list).
+    table_rev = st.session_state["users_table_rev"]
+    event = st.dataframe(
+        rows,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="multi-row",
+        column_config={
+            "ID": st.column_config.NumberColumn(width="small"),
+            "Phone Number": st.column_config.TextColumn(width="medium"),
+        },
+        key=f"users_table_{table_rev}",
+    )
+
+    selected_indices = event.selection.rows
+    selected_user_ids = [users[i].user_id for i in selected_indices]
+    n_selected = len(selected_user_ids)
+
+    # Render the action bar based on how many rows are currently selected.
+    with action_slot.container():
+        if n_selected == 0:
+            create_col, _ = st.columns([1, 6])
+            if create_col.button(
+                "+ Create", key="btn_create", type="primary", use_container_width=True
+            ):
+                goto_create()
+                st.rerun()
+        elif n_selected == 1:
+            cols = st.columns([1, 1, 1, 5])
+            if cols[0].button(
+                "+ Create", key="btn_create", type="primary", use_container_width=True
+            ):
+                goto_create()
+                st.rerun()
+            if cols[1].button(
+                "Edit", key="btn_edit", type="secondary", use_container_width=True
+            ):
+                goto_edit(selected_user_ids[0])
+                st.rerun()
+            if cols[2].button(
+                "Delete", key="btn_delete", type="secondary", use_container_width=True
+            ):
+                st.session_state["bulk_delete_target_ids"] = list(selected_user_ids)
+                st.rerun()
+        else:
+            # 2 or more selected — Edit hidden, only Create + Delete.
+            cols = st.columns([1, 1, 5])
+            if cols[0].button(
+                "+ Create", key="btn_create", type="primary", use_container_width=True
+            ):
+                goto_create()
+                st.rerun()
+            if cols[1].button(
+                f"Delete ({n_selected})",
+                key="btn_delete",
+                type="secondary",
+                use_container_width=True,
+            ):
+                st.session_state["bulk_delete_target_ids"] = list(selected_user_ids)
+                st.rerun()
+
+    # Bulk delete confirmation, shown only when the Delete action has armed it.
+    pending = st.session_state.get("bulk_delete_target_ids")
+    if pending:
+        with confirm_slot.container():
+            st.warning(
+                f"Delete **{len(pending)}** user(s)? This action cannot be undone."
+            )
+            col_yes, col_no, _ = st.columns([1, 1, 5])
+            if col_yes.button(
+                "Yes, delete",
+                key="confirm_bulk_del",
+                type="primary",
+                use_container_width=True,
+            ):
+                deleted = sum(1 for uid in pending if repo.delete(uid))
+                st.session_state["bulk_delete_target_ids"] = None
+                # Bumping the table revision creates a brand-new dataframe
+                # widget so the previous selection (now stale) is dropped.
+                st.session_state["users_table_rev"] = table_rev + 1
+                flash("success", f"{deleted} user(s) deleted.")
+                st.rerun()
+            if col_no.button(
+                "Cancel", key="cancel_bulk_del", use_container_width=True
+            ):
+                st.session_state["bulk_delete_target_ids"] = None
+                st.rerun()
+
+    st.caption(
+        f"{len(users)} user(s) shown — tick a row to enable Edit / Delete."
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Add User
+# Create view
 # --------------------------------------------------------------------------- #
 
 
-def page_add_user(repo: UserRepository) -> None:
-    # Apply a pending clear (set on the previous run after a successful add or reset).
-    # We must do this BEFORE the widgets are instantiated, otherwise Streamlit
-    # forbids assigning to widget-keyed session_state.
+def page_create_user(repo: UserRepository) -> None:
+    # Apply a pending clear from the previous run (after a successful add or reset).
+    # Must happen BEFORE the form widgets are instantiated.
     if st.session_state.pop("_add_form_should_clear", False):
         clear_add_form()
+
+    if st.button("< Back to list", key="back_from_create"):
+        goto_list()
+        st.rerun()
 
     st.subheader("Add a new user")
 
@@ -211,7 +492,6 @@ def page_add_user(repo: UserRepository) -> None:
             key="add_phone_local",
         )
 
-        # Compact button strip: both buttons inside a narrow nested column.
         button_strip, _ = st.columns([3, 9])
         with button_strip:
             btn_add, btn_reset = st.columns(2)
@@ -239,77 +519,47 @@ def page_add_user(repo: UserRepository) -> None:
             user_id = repo.create(user)
             st.session_state["_add_form_should_clear"] = True
             flash("success", f"User added (ID: {user_id}).")
+            goto_list()
             st.rerun()
         except (ValidationError, DuplicatePhoneError) as exc:
             st.error(str(exc))
 
 
 # --------------------------------------------------------------------------- #
-# Browse / Search / Edit / Delete
+# Edit view
 # --------------------------------------------------------------------------- #
 
 
-def page_browse(repo: UserRepository) -> None:
-    st.subheader("Browse users")
+def page_edit_user(repo: UserRepository, user_id: int | None) -> None:
+    if st.button("< Back to list", key="back_from_edit"):
+        goto_list()
+        st.rerun()
 
-    query = st.text_input(
-        "Search",
-        value=st.session_state["search_query"],
-        placeholder="Filter by name, phone, place, birth date, or ID",
-        label_visibility="collapsed",
-    )
-    st.session_state["search_query"] = query
-
-    users = repo.search(query) if query.strip() else repo.get_all()
-
-    if not users:
-        st.info("No users match your search." if query else "No users yet. Add one from the 'Add user' tab.")
+    if user_id is None:
+        st.error("No user selected.")
         return
 
-    rows = [
-        {
-            "ID": u.user_id,
-            "First Name": u.first_name,
-            "Last Name": u.last_name,
-            "Birth Date": format_date_display(u.birth_date),
-            "Birth Place": u.birth_place,
-            "Phone Number": u.phone_number,
-        }
-        for u in users
-    ]
-    st.dataframe(
-        rows,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "ID": st.column_config.TextColumn(width="small"),
-            "Phone Number": st.column_config.TextColumn(width="medium"),
-        },
-    )
-
-    st.markdown(f"**{len(users)}** user(s) shown.")
-    st.divider()
-
-    options = {
-        f"{u.first_name} {u.last_name}  -  {u.phone_number}": u.user_id for u in users
-    }
-    pick = st.selectbox(
-        "Select a user to edit or delete",
-        options=["-"] + list(options.keys()),
-        index=0,
-    )
-    if pick != "-":
-        selected = repo.get_by_id(options[pick])
-        if selected:
-            render_edit_panel(repo, selected)
-
-
-def render_edit_panel(repo: UserRepository, user: User) -> None:
-    st.markdown(f"#### Editing `{user.user_id}`")
+    user = repo.get_by_id(user_id)
+    if user is None:
+        st.error(f"User #{user_id} no longer exists.")
+        return
 
     current_country_label, current_local = split_phone(user.phone_number)
 
     with st.form(f"edit_form_{user.user_id}"):
+        # Header row: title on the left, red icon delete button on the right.
+        # The delete button is a form_submit_button because Streamlit forbids
+        # st.button inside an st.form. The CSS in inject_app_styles() makes
+        # the icon-only button render in red.
+        title_col, _, del_col = st.columns([6, 5, 1.2])
+        title_col.markdown(f"### Edit user #{user.user_id}")
+        delete_clicked = del_col.form_submit_button(
+            ":material/delete:",
+            help="Delete this user",
+            type="primary",
+            use_container_width=True,
+        )
+
         col_a, col_b = st.columns(2)
         first_name = col_a.text_input("First name :red[*]", value=user.first_name)
         last_name = col_b.text_input("Last name :red[*]", value=user.last_name)
@@ -342,14 +592,9 @@ def render_edit_panel(repo: UserRepository, user: User) -> None:
             help=f"Country code {country_code} is added automatically.",
         )
 
-        save_clicked = st.form_submit_button("Save changes", type="primary", use_container_width=True)
-
-    delete_clicked = st.button(
-        "Delete this user",
-        key=f"delete_btn_{user.user_id}",
-        type="secondary",
-        use_container_width=True,
-    )
+        save_clicked = st.form_submit_button(
+            "Save changes", type="primary", use_container_width=True
+        )
 
     if save_clicked:
         try:
@@ -363,6 +608,7 @@ def render_edit_panel(repo: UserRepository, user: User) -> None:
             }
             repo.update(user.user_id, updates)
             flash("success", "User updated.")
+            goto_list()
             st.rerun()
         except (ValidationError, DuplicatePhoneError) as exc:
             st.error(str(exc))
@@ -376,33 +622,29 @@ def render_edit_panel(repo: UserRepository, user: User) -> None:
             "This action cannot be undone."
         )
         col_yes, col_no = st.columns(2)
-        if col_yes.button("Yes, delete", key=f"confirm_del_{user.user_id}", type="primary", use_container_width=True):
+        if col_yes.button(
+            "Yes, delete",
+            key=f"confirm_del_{user.user_id}",
+            type="primary",
+            use_container_width=True,
+        ):
             repo.delete(user.user_id)
-            st.session_state["delete_target_id"] = None
             flash("success", "User deleted.")
+            goto_list()
             st.rerun()
-        if col_no.button("Cancel", key=f"cancel_del_{user.user_id}", use_container_width=True):
+        if col_no.button(
+            "Cancel", key=f"cancel_del_{user.user_id}", use_container_width=True
+        ):
             st.session_state["delete_target_id"] = None
             st.rerun()
 
 
 # --------------------------------------------------------------------------- #
-# Main
+# Sidebar
 # --------------------------------------------------------------------------- #
 
 
-def main() -> None:
-    init_state()
-    inject_app_styles()
-
-    try:
-        repo = get_repository()
-    except DatabaseError as exc:
-        st.error(f"Database connection failed: {exc}")
-        st.info("Make sure MongoDB is running and `.env` is configured correctly.")
-        st.stop()
-        return
-
+def render_sidebar(repo: UserRepository) -> None:
     with st.sidebar:
         st.markdown(
             """
@@ -454,14 +696,39 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-    st.title("Users")
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+
+def main() -> None:
+    init_state()
+    inject_app_styles()
+
+    try:
+        repo = get_repository()
+    except DatabaseError as exc:
+        st.error(f"Database connection failed: {exc}")
+        st.info("Make sure MongoDB is running and `.env` is configured correctly.")
+        st.stop()
+        return
+
+    render_sidebar(repo)
+    render_top_bar()
     render_flash()
 
-    tab_browse, tab_add = st.tabs(["Browse / Edit", "Add user"])
-    with tab_browse:
-        page_browse(repo)
-    with tab_add:
-        page_add_user(repo)
+    view = st.session_state.get("view", "list")
+    if view == "list":
+        page_users_list(repo)
+    elif view == "create":
+        page_create_user(repo)
+    elif view == "edit":
+        page_edit_user(repo, st.session_state.get("editing_user_id"))
+    else:
+        # Defensive fallback if state is somehow corrupted.
+        goto_list()
+        st.rerun()
 
 
 if __name__ == "__main__":
