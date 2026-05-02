@@ -63,13 +63,24 @@ collection through a graphical interface.
    python -m scripts.test_connection
    ```
 
+6. Launch the GUI:
+
+   ```bash
+   streamlit run app.py
+   ```
+
+   The application opens in your default browser at http://localhost:8501.
+
 ## Project structure
 
 ```
 mini_project_1/
 ├── .env.example
 ├── .gitignore
+├── .streamlit/
+│   └── config.toml
 ├── README.md
+├── app.py                    # Streamlit GUI entry point
 ├── requirements.txt
 ├── scripts/
 │   └── test_connection.py
