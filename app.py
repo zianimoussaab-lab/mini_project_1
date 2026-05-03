@@ -15,6 +15,7 @@ from datetime import date, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
+from st_keyup import st_keyup
 
 from src.database import Database, DatabaseError
 from src.user_model import DATE_FORMAT, User, ValidationError
@@ -95,8 +96,6 @@ def init_state() -> None:
     st.session_state.setdefault("view", "list")
     st.session_state.setdefault("editing_user_id", None)
     st.session_state.setdefault("search_query", "")
-    st.session_state.setdefault("delete_target_id", None)
-    st.session_state.setdefault("bulk_delete_target_ids", None)
     st.session_state.setdefault("users_table_rev", 0)
     st.session_state.setdefault("flash", None)
     for key, default in ADD_FORM_DEFAULTS.items():
@@ -111,7 +110,6 @@ def clear_add_form() -> None:
 def goto_list() -> None:
     st.session_state["view"] = "list"
     st.session_state["editing_user_id"] = None
-    st.session_state["delete_target_id"] = None
 
 
 def goto_create() -> None:
@@ -121,11 +119,60 @@ def goto_create() -> None:
 def goto_edit(user_id: int) -> None:
     st.session_state["view"] = "edit"
     st.session_state["editing_user_id"] = user_id
-    st.session_state["delete_target_id"] = None
 
 
 def flash(kind: str, message: str) -> None:
     st.session_state["flash"] = (kind, message)
+
+
+# --------------------------------------------------------------------------- #
+# Confirmation dialogs
+# --------------------------------------------------------------------------- #
+
+
+@st.dialog("Confirm deletion")
+def confirm_bulk_delete(repo: UserRepository, user_ids: list) -> None:
+    n = len(user_ids)
+    if n == 1:
+        st.markdown(
+            "Are you sure you want to delete this user? "
+            "This action cannot be undone."
+        )
+    else:
+        st.markdown(
+            f"Are you sure you want to delete **{n} users**? "
+            "This action cannot be undone."
+        )
+    col_yes, col_no = st.columns(2)
+    if col_yes.button(
+        "Confirm", type="primary", use_container_width=True, key="dlg_bulk_yes"
+    ):
+        deleted = sum(1 for uid in user_ids if repo.delete(uid))
+        st.session_state["users_table_rev"] = (
+            st.session_state.get("users_table_rev", 0) + 1
+        )
+        flash("success", f"{deleted} user(s) deleted.")
+        st.rerun()
+    if col_no.button("Cancel", use_container_width=True, key="dlg_bulk_no"):
+        st.rerun()
+
+
+@st.dialog("Confirm deletion")
+def confirm_single_delete(repo: UserRepository, user: User) -> None:
+    st.markdown(
+        f"Are you sure you want to delete **{user.first_name} {user.last_name}**? "
+        "This action cannot be undone."
+    )
+    col_yes, col_no = st.columns(2)
+    if col_yes.button(
+        "Confirm", type="primary", use_container_width=True, key="dlg_single_yes"
+    ):
+        repo.delete(user.user_id)
+        flash("success", "User deleted.")
+        goto_list()
+        st.rerun()
+    if col_no.button("Cancel", use_container_width=True, key="dlg_single_no"):
+        st.rerun()
 
 
 def render_flash() -> None:
@@ -301,21 +348,23 @@ def render_top_bar() -> None:
 
 
 def page_users_list(repo: UserRepository) -> None:
-    # Slots are reserved at the top so the action bar and confirmation
-    # banner can be filled in AFTER we know what the user has selected
-    # in the dataframe below.
+    # The action bar lives in this slot at the top of the page; it gets
+    # filled in AFTER the dataframe renders so it can read the live selection.
     action_slot = st.empty()
-    confirm_slot = st.empty()
 
     st.markdown("### Users")
 
-    query = st.text_input(
+    # st_keyup triggers a rerun on every keystroke (with a small debounce)
+    # so the list filters as the user types instead of waiting for Enter.
+    query = st_keyup(
         "Search",
         value=st.session_state["search_query"],
         placeholder="Filter by name, phone, place, birth date, or ID",
+        debounce=250,
         label_visibility="collapsed",
+        key="search_keyup",
     )
-    st.session_state["search_query"] = query
+    st.session_state["search_query"] = query or ""
 
     users = repo.search(query) if query.strip() else repo.get_all()
 
@@ -395,8 +444,7 @@ def page_users_list(repo: UserRepository) -> None:
             if cols[2].button(
                 "Delete", key="btn_delete", type="secondary", use_container_width=True
             ):
-                st.session_state["bulk_delete_target_ids"] = list(selected_user_ids)
-                st.rerun()
+                confirm_bulk_delete(repo, list(selected_user_ids))
         else:
             # 2 or more selected — Edit hidden, only Create + Delete.
             cols = st.columns([1, 1, 5])
@@ -411,35 +459,7 @@ def page_users_list(repo: UserRepository) -> None:
                 type="secondary",
                 use_container_width=True,
             ):
-                st.session_state["bulk_delete_target_ids"] = list(selected_user_ids)
-                st.rerun()
-
-    # Bulk delete confirmation, shown only when the Delete action has armed it.
-    pending = st.session_state.get("bulk_delete_target_ids")
-    if pending:
-        with confirm_slot.container():
-            st.warning(
-                f"Delete **{len(pending)}** user(s)? This action cannot be undone."
-            )
-            col_yes, col_no, _ = st.columns([1, 1, 5])
-            if col_yes.button(
-                "Yes, delete",
-                key="confirm_bulk_del",
-                type="primary",
-                use_container_width=True,
-            ):
-                deleted = sum(1 for uid in pending if repo.delete(uid))
-                st.session_state["bulk_delete_target_ids"] = None
-                # Bumping the table revision creates a brand-new dataframe
-                # widget so the previous selection (now stale) is dropped.
-                st.session_state["users_table_rev"] = table_rev + 1
-                flash("success", f"{deleted} user(s) deleted.")
-                st.rerun()
-            if col_no.button(
-                "Cancel", key="cancel_bulk_del", use_container_width=True
-            ):
-                st.session_state["bulk_delete_target_ids"] = None
-                st.rerun()
+                confirm_bulk_delete(repo, list(selected_user_ids))
 
     st.caption(
         f"{len(users)} user(s) shown — tick a row to enable Edit / Delete."
@@ -614,29 +634,7 @@ def page_edit_user(repo: UserRepository, user_id: int | None) -> None:
             st.error(str(exc))
 
     if delete_clicked:
-        st.session_state["delete_target_id"] = user.user_id
-
-    if st.session_state.get("delete_target_id") == user.user_id:
-        st.warning(
-            f"Are you sure you want to delete **{user.first_name} {user.last_name}**? "
-            "This action cannot be undone."
-        )
-        col_yes, col_no = st.columns(2)
-        if col_yes.button(
-            "Yes, delete",
-            key=f"confirm_del_{user.user_id}",
-            type="primary",
-            use_container_width=True,
-        ):
-            repo.delete(user.user_id)
-            flash("success", "User deleted.")
-            goto_list()
-            st.rerun()
-        if col_no.button(
-            "Cancel", key=f"cancel_del_{user.user_id}", use_container_width=True
-        ):
-            st.session_state["delete_target_id"] = None
-            st.rerun()
+        confirm_single_delete(repo, user)
 
 
 # --------------------------------------------------------------------------- #
